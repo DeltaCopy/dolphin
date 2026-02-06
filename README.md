@@ -49,3 +49,7 @@ A good example of a feature that is non-intrusive is the embedded terminal in Do
 ### Options
 
 Options are mandatory as the "average Joe" user does not exist. Still it is not the goal of Dolphin to offer options for all kind of things. Again the focus is on the possible needs of the target user group. Each additional option makes it harder finding other options, so the same rules for features are applied to options too.
+
+### Changes
+
+- Reverts the selection effects introduced in commit c1e7128

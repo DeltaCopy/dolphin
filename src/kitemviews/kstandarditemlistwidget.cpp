@@ -269,6 +269,7 @@ KStandardItemListWidget::KStandardItemListWidget(KItemListWidgetInformant *infor
     , m_scaledPixmapSize()
     , m_columnWidthSum()
     , m_iconRect()
+    , m_hoverPixmap()
     , m_textRect()
     , m_sortedVisibleRoles()
     , m_expansionArea()
@@ -343,7 +344,7 @@ void KStandardItemListWidget::paint(QPainter *painter, const QStyleOptionGraphic
         drawSiblingsInformation(painter);
     }
 
-    auto pixmap = m_pixmap;
+    auto pixmap = isHovered() ? m_hoverPixmap : m_pixmap;
     if (!m_overlays.isEmpty()) {
         const qreal dpr = KItemViewsUtils::devicePixelRatio(this);
 
@@ -385,7 +386,7 @@ void KStandardItemListWidget::paint(QPainter *painter, const QStyleOptionGraphic
             {
                 QPainter p(&pixmap2);
                 p.setOpacity(hoverOpacity());
-                p.drawPixmap(0, 0, m_pixmap);
+                p.drawPixmap(0, 0, m_hoverPixmap);
             }
 
             // Paint pixmap2 on pixmap1 using CompositionMode_Plus
@@ -481,6 +482,12 @@ void KStandardItemListWidget::paint(QPainter *painter, const QStyleOptionGraphic
 #endif
 }
 
+QRectF KStandardItemListWidget::iconRect() const
+{
+    const_cast<KStandardItemListWidget *>(this)->triggerCacheRefreshing();
+    return m_iconRect;
+}
+
 QRectF KStandardItemListWidget::textRect() const
 {
     const_cast<KStandardItemListWidget *>(this)->triggerCacheRefreshing();
@@ -528,36 +535,35 @@ QRectF KStandardItemListWidget::textFocusRect() const
     return m_textRect;
 }
 
-QRectF KStandardItemListWidget::selectionRectFull() const
+QRectF KStandardItemListWidget::selectionRect() const
 {
     const_cast<KStandardItemListWidget *>(this)->triggerCacheRefreshing();
-    const int padding = styleOption().padding;
-    if (m_layout == DetailsLayout) {
-        auto rect = m_iconRect | m_textRect;
+
+    switch (m_layout) {
+    case IconsLayout:
+        return m_textRect;
+
+    case CompactLayout:
+    case DetailsLayout: {
+        const int padding = styleOption().padding;
+        QRectF adjustedIconRect = iconRect().adjusted(-padding, -padding, padding, padding);
+        QRectF result = adjustedIconRect | m_textRect;
         if (m_highlightEntireRow) {
             if (layoutDirection() == Qt::LeftToRight) {
-                rect.setRight(leftPadding() + m_columnWidthSum);
+                result.setRight(leftPadding() + m_columnWidthSum);
             } else {
-                rect.setLeft(size().width() - m_columnWidthSum - rightPadding());
+                result.setLeft(size().width() - m_columnWidthSum - rightPadding());
             }
         }
-        return rect.adjusted(-padding, 0, padding, 0);
-    } else {
-        if (m_layout == CompactLayout) {
-            return rect().adjusted(-padding, 0, padding, 0);
-        }
-        return rect();
-    }
-}
-
-QRectF KStandardItemListWidget::selectionRectCore() const
-{
-    // Allow dragging from selection area in details view.
-    if (m_layout == DetailsLayout && highlightEntireRow() && !isSelected()) {
-        QRectF result = m_iconRect | m_textRect;
         return result;
     }
-    return selectionRectFull();
+
+    default:
+        Q_ASSERT(false);
+        break;
+    }
+
+    return m_textRect;
 }
 
 QRectF KStandardItemListWidget::expansionToggleRect() const
@@ -570,7 +576,8 @@ QRectF KStandardItemListWidget::selectionToggleRect() const
 {
     const_cast<KStandardItemListWidget *>(this)->triggerCacheRefreshing();
 
-    const int widgetIconSize = styleOption().iconSize;
+    const QRectF widgetIconRect = iconRect();
+    const int widgetIconSize = iconSize();
     int toggleSize = KIconLoader::SizeSmall;
     if (widgetIconSize >= KIconLoader::SizeEnormous) {
         toggleSize = KIconLoader::SizeMedium;
@@ -578,11 +585,29 @@ QRectF KStandardItemListWidget::selectionToggleRect() const
         toggleSize = KIconLoader::SizeSmallMedium;
     }
 
-    const int padding = styleOption().padding;
-    const QRectF selectionRectMinusPadding = selectionRectFull().adjusted(padding, padding, -padding, -padding);
-    QPointF pos = selectionRectMinusPadding.topLeft();
+    QPointF pos = widgetIconRect.topLeft();
+
+    // If the selection toggle has a very small distance to the
+    // widget borders, the size of the selection toggle will get
+    // increased to prevent an accidental clicking of the item
+    // when trying to hit the toggle.
+    const int widgetHeight = size().height();
+    const int widgetWidth = size().width();
+    const int minMargin = 2;
+
+    if (toggleSize + minMargin * 2 >= widgetHeight) {
+        pos.rx() -= (widgetHeight - toggleSize) / 2;
+        toggleSize = widgetHeight;
+        pos.setY(0);
+    }
+    if (toggleSize + minMargin * 2 >= widgetWidth) {
+        pos.ry() -= (widgetWidth - toggleSize) / 2;
+        toggleSize = widgetWidth;
+        pos.setX(0);
+    }
+
     if (QApplication::isRightToLeft()) {
-        pos.setX(selectionRectMinusPadding.right() - (pos.x() + toggleSize - selectionRectMinusPadding.left()));
+        pos.setX(widgetIconRect.right() - (pos.x() + toggleSize - widgetIconRect.left()));
     }
 
     return QRectF(pos, QSizeF(toggleSize, toggleSize));
@@ -698,11 +723,7 @@ QFont KStandardItemListWidget::customizedFont(const QFont &baseFont) const
 
 QPalette::ColorRole KStandardItemListWidget::normalTextColorRole() const
 {
-    if (isPressed()) {
-        return QPalette::HighlightedText;
-    } else {
-        return QPalette::Text;
-    }
+    return QPalette::Text;
 }
 
 void KStandardItemListWidget::setTextColor(const QColor &color)
@@ -725,7 +746,7 @@ QColor KStandardItemListWidget::textColor(const QWidget &widget) const
     }
 
     const QPalette::ColorGroup group = isActiveWindow() && widget.hasFocus() ? QPalette::Active : QPalette::Inactive;
-    const QPalette::ColorRole role = normalTextColorRole();
+    const QPalette::ColorRole role = isSelected() ? QPalette::HighlightedText : normalTextColorRole();
     return styleOption().palette.color(group, role);
 }
 
@@ -1105,7 +1126,7 @@ void KStandardItemListWidget::updatePixmapCache()
             const bool hasFocus = scene()->views()[0]->parentWidget()->hasFocus();
             m_pixmap = pixmapForIcon(iconName,
                                      QSize(maxIconWidth, maxIconHeight),
-                                     m_layout != IconsLayout && isActiveWindow() && isPressed() && hasFocus ? QIcon::Selected : QIcon::Normal);
+                                     m_layout != IconsLayout && isActiveWindow() && hasFocus ? QIcon::Selected : QIcon::Normal);
 
         } else {
             if (m_pixmap.width() / m_pixmap.devicePixelRatio() != maxIconWidth || m_pixmap.height() / m_pixmap.devicePixelRatio() != maxIconHeight) {
@@ -1116,6 +1137,7 @@ void KStandardItemListWidget::updatePixmapCache()
         }
 
         if (m_pixmap.isNull()) {
+            m_hoverPixmap = QPixmap();
             return;
         }
 
@@ -1125,6 +1147,17 @@ void KStandardItemListWidget::updatePixmapCache()
 
         if (m_isHidden) {
             KIconEffect::semiTransparent(m_pixmap);
+        }
+
+        if (m_layout == IconsLayout && isSelected()) {
+            const QColor color = palette().brush(QPalette::Normal, QPalette::Highlight).color();
+            QImage image = m_pixmap.toImage();
+            if (image.isNull()) {
+                m_hoverPixmap = QPixmap();
+                return;
+            }
+            KIconEffect::colorize(image, color, 0.8f);
+            m_pixmap = QPixmap::fromImage(image);
         }
     }
 
@@ -1172,6 +1205,15 @@ void KStandardItemListWidget::updatePixmapCache()
         const QPointF squareIconPos(m_pixmapPos.x() - 0.5 * widthOffset, m_pixmapPos.y() - 0.5 * heightOffset);
         const QSizeF squareIconSize(widgetIconSize, widgetIconSize);
         m_iconRect = QRectF(squareIconPos, squareIconSize);
+    }
+
+    // Prepare the pixmap that is used when the item gets hovered
+    if (isHovered()) {
+        m_hoverPixmap = m_pixmap;
+        KIconEffect::toActive(m_hoverPixmap);
+    } else if (hoverOpacity() <= 0.0) {
+        // No hover animation is ongoing. Clear m_hoverPixmap to save memory.
+        m_hoverPixmap = QPixmap();
     }
 }
 
@@ -1540,7 +1582,7 @@ void KStandardItemListWidget::updateAdditionalInfoTextColor()
     } else if (isSelected() && hasFocus && (m_layout != DetailsLayout || m_highlightEntireRow)) {
         // The detail text color needs to match the main text (HighlightedText) for the same level
         // of readability. We short circuit early here to avoid interpolating with another color.
-        m_additionalInfoTextColor = styleOption().palette.color(normalTextColorRole());
+        m_additionalInfoTextColor = styleOption().palette.color(QPalette::HighlightedText);
         return;
     } else {
         c1 = styleOption().palette.text().color();
